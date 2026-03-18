@@ -1,0 +1,4 @@
+audio1.wav|el niño come una manzana
+audio2.wav|la mujer bebe agua
+audio3.wav|el perro corre rápido
+sample_audio.wav|prueba de audio

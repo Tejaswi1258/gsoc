@@ -1,0 +1,1 @@
+sample_audio.wav||WER:1.0
