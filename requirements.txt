@@ -4,3 +4,4 @@ librosa
 jiwer
 numpy
 pyyaml
+tqdm

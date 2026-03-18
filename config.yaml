@@ -1,35 +1,44 @@
+# config.yaml — Spanish Learner Speech Transcription Pipeline
+# All values here can be overridden via CLI flags.
+
 pipeline:
-  model_size: "base"        # Whisper model: tiny | base | small | medium | large
-  language: "es"            # ISO 639-1 language code
-  denoise: true             # Apply spectral noise reduction
-  beam_size: 5              # Whisper beam search width
-  best_of: 5                # Whisper sampling candidates
-  temperature: 0.0          # 0.0 = greedy decoding
+  model_size:  "base"   # Whisper model: tiny | base | small | medium | large
+  language:    "es"     # BCP-47 language code (forced — no auto-detection)
+  denoise:     true     # Spectral noise reduction on/off
+  beam_size:   5        # Beam search width (higher = more accurate, slower)
+  temperature: 0.0      # 0.0 = greedy / deterministic decoding
 
 paths:
-  audio_folder: "data"
+  audio_folder:   "data"
   reference_file: "data/references.txt"
-  results_file: "results/predictions.txt"
-  log_file: "results/pipeline.log"
+  results_file:   "results/predictions.txt"
+  log_file:       "results/pipeline.log"
 
 corrections:
+  # Word-level: restore diacritics / accents dropped by non-native speakers
   words:
-    nino: "niño"
-    nina: "niña"
-    rapido: "rápido"
-    rapida: "rápida"
-    senor: "señor"
-    senora: "señora"
-    arbol: "árbol"
-    musica: "música"
+    nino:     "niño"
+    nina:     "niña"
+    rapido:   "rápido"
+    rapida:   "rápida"
+    senor:    "señor"
+    senora:   "señora"
+    arbol:    "árbol"
+    musica:   "música"
     telefono: "teléfono"
-    numero: "número"
-    pagina: "página"
-    cafe: "café"
-    ingles: "inglés"
-    frances: "francés"
+    numero:   "número"
+    pagina:   "página"
+    cafe:     "café"
+    ingles:   "inglés"
+    frances:  "francés"
+    facil:    "fácil"
+    dificil:  "difícil"
+    util:     "útil"
+
+  # Phrase-level: merge words that learners (or Whisper) incorrectly split
   phrases:
-    "man zana": "manzana"
-    "a vion": "avión"
-    "auto bus": "autobús"
-    "para guas": "paraguas"
+    "man zana":   "manzana"
+    "a vion":     "avión"
+    "auto bus":   "autobús"
+    "para guas":  "paraguas"
+    "bici cleta": "bicicleta"
