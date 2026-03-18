@@ -2,6 +2,20 @@
 """
 Post-processing for Spanish learner transcriptions.
 
+Why post-processing matters for L2 speech
+------------------------------------------
+Whisper transcribes what it *hears*, not what the speaker *intended*.
+Non-native Spanish speakers systematically drop diacritics and accent marks
+because their L1 phonology does not distinguish them.  For example:
+
+  - English speakers say "nino" (no tilde) instead of "niño"
+  - Portuguese speakers say "rapido" instead of "rápido"
+  - Mandarin speakers fragment compound words: "man zana" instead of "manzana"
+
+These are *predictable* errors — they follow patterns tied to the learner's
+native language.  A rule-based post-processing layer can correct them
+deterministically, improving WER without any model retraining.
+
 Two correction layers are applied in order:
 
   1. Phrase corrections — fix words that Whisper splits incorrectly,
@@ -18,18 +32,21 @@ easy to extend the vocabulary without touching code.
 
 import logging
 import re
-from typing import Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Default correction tables
-# These are used when no config overrides are provided.
+# Extend these in config.yaml — no code changes needed.
 # ---------------------------------------------------------------------------
 
-DEFAULT_WORD_CORRECTIONS: dict[str, str] = {
+DEFAULT_WORD_CORRECTIONS: Dict[str, str] = {
+    # Tilde / ñ restorations
     "nino":     "niño",
     "nina":     "niña",
+    # Acute accent restorations
     "rapido":   "rápido",
     "rapida":   "rápida",
     "senor":    "señor",
@@ -45,14 +62,17 @@ DEFAULT_WORD_CORRECTIONS: dict[str, str] = {
     "facil":    "fácil",
     "dificil":  "difícil",
     "util":     "útil",
-    "examen":   "examen",   # already correct — kept as no-op example
+    "examen":   "examen",   # already correct — kept as a no-op example
 }
 
-DEFAULT_PHRASE_CORRECTIONS: dict[str, str] = {
-    "man zana":  "manzana",
-    "a vion":    "avión",
-    "auto bus":  "autobús",
-    "para guas": "paraguas",
+# Multi-word phrases that learners (or Whisper) incorrectly segment.
+# Applied before word-level corrections so merged tokens feed into
+# the word table cleanly.
+DEFAULT_PHRASE_CORRECTIONS: Dict[str, str] = {
+    "man zana":   "manzana",
+    "a vion":     "avión",
+    "auto bus":   "autobús",
+    "para guas":  "paraguas",
     "bici cleta": "bicicleta",
 }
 
@@ -61,23 +81,40 @@ DEFAULT_PHRASE_CORRECTIONS: dict[str, str] = {
 # Individual correction steps
 # ---------------------------------------------------------------------------
 
-def apply_phrase_corrections(text: str, phrases: dict[str, str]) -> str:
+def apply_phrase_corrections(text: str, phrases: Dict[str, str]) -> str:
     """
     Replace incorrectly segmented multi-word sequences with the correct form.
 
     Matching is case-insensitive; the corrected form is inserted as-is.
+
+    Args:
+        text:    Input transcription string.
+        phrases: Mapping of wrong phrase → correct phrase.
+
+    Returns:
+        Text with all matching phrases replaced.
     """
     for wrong, correct in phrases.items():
         text = re.sub(re.escape(wrong), correct, text, flags=re.IGNORECASE)
     return text
 
 
-def apply_word_corrections(text: str, corrections: dict[str, str]) -> str:
+def apply_word_corrections(text: str, corrections: Dict[str, str]) -> str:
     """
-    Restore diacritics / accents using whole-word regex matching.
+    Restore diacritics and accents using whole-word regex matching.
+
+    Uses \\b word boundaries so partial matches are never made
+    (e.g. "rapido" is fixed but "rapidometro" is left alone).
 
     Capitalisation of the original word is preserved:
       "Nino" → "Niño",  "nino" → "niño"
+
+    Args:
+        text:        Input transcription string.
+        corrections: Mapping of unaccented word → correctly accented word.
+
+    Returns:
+        Text with diacritics restored.
     """
     if not corrections:
         return text
@@ -85,7 +122,7 @@ def apply_word_corrections(text: str, corrections: dict[str, str]) -> str:
     pattern = r"\b(" + "|".join(re.escape(k) for k in corrections) + r")\b"
 
     def _replace(match: re.Match) -> str:
-        original = match.group(0)
+        original  = match.group(0)
         corrected = corrections.get(original.lower(), original)
         return corrected.capitalize() if original[0].isupper() else corrected
 
@@ -93,7 +130,12 @@ def apply_word_corrections(text: str, corrections: dict[str, str]) -> str:
 
 
 def normalize(text: str) -> str:
-    """Lowercase and collapse multiple spaces into one."""
+    """
+    Lowercase and collapse multiple whitespace characters into a single space.
+
+    Normalisation ensures consistent comparison with reference strings during
+    WER evaluation — both sides must be in the same case and spacing format.
+    """
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
@@ -103,24 +145,24 @@ def normalize(text: str) -> str:
 
 def postprocess(
     text: str,
-    word_corrections: Optional[dict[str, str]] = None,
-    phrase_corrections: Optional[dict[str, str]] = None,
+    word_corrections:   Optional[Dict[str, str]] = None,
+    phrase_corrections: Optional[Dict[str, str]] = None,
 ) -> str:
     """
-    Run the full post-processing pipeline on a raw transcription string.
+    Run the full post-processing pipeline on a raw Whisper transcription.
 
-    Steps:
-      1. Phrase-level corrections  (split-word merging)
-      2. Word-level corrections    (accent / diacritic restoration)
-      3. Normalization             (lowercase, whitespace cleanup)
+    Steps applied in order:
+      1. Phrase-level corrections  — merge incorrectly split compound words
+      2. Word-level corrections    — restore missing diacritics / accents
+      3. Normalisation             — lowercase + whitespace cleanup
 
     Args:
-        text:               Raw transcription from Whisper.
+        text:               Raw transcription string from Whisper.
         word_corrections:   Custom word table; falls back to DEFAULT_WORD_CORRECTIONS.
         phrase_corrections: Custom phrase table; falls back to DEFAULT_PHRASE_CORRECTIONS.
 
     Returns:
-        Cleaned, corrected transcription string.
+        Cleaned, corrected, normalised transcription string.
     """
     if not text.strip():
         return text
