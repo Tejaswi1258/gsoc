@@ -29,16 +29,21 @@ AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".m4a")
 # Model loading
 # ---------------------------------------------------------------------------
 
-def load_model(model_size: str = "base") -> whisper.Whisper:
+def load_model(model_size: str = "base", device: str = "cpu") -> whisper.Whisper:
     """
-    Load a Whisper model by size name.
+    Load a Whisper model by size name onto the specified device.
 
     Sizes (accuracy vs speed trade-off):
         tiny  < base  < small  < medium  < large
     The 'base' model is a good default for research prototypes.
+
+    Args:
+        model_size: Whisper model variant to load.
+        device:     'cuda' for GPU acceleration, 'cpu' otherwise.
+                    GPU inference is ~5-10x faster and enables fp16.
     """
-    logger.info("Loading Whisper model: '%s'", model_size)
-    model = whisper.load_model(model_size)
+    logger.info("Loading Whisper model: '%s' on device: '%s'", model_size, device)
+    model = whisper.load_model(model_size, device=device)
     logger.info("Model loaded successfully")
     return model
 
@@ -70,13 +75,17 @@ def transcribe(
     Returns:
         Stripped transcription string.
     """
+    # fp16 (half-precision) is only supported on CUDA — use it automatically
+    # when a GPU is available for a ~2x speed boost with no accuracy loss.
+    use_fp16 = str(next(model.parameters()).device) != "cpu"
+
     result = model.transcribe(
         audio,
         language=language,
         beam_size=beam_size,
         best_of=best_of,
         temperature=temperature,
-        fp16=False,
+        fp16=use_fp16,
     )
     text = result["text"].strip()
     logger.debug("Transcribed: %s", text)
