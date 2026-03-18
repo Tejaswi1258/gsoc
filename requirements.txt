@@ -1,6 +1,7 @@
 torch>=2.2.0
 openai-whisper
 librosa
+noisereduce
 jiwer
 numpy
 pyyaml

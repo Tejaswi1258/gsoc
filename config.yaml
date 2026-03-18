@@ -9,7 +9,7 @@ pipeline:
   temperature: 0.0      # 0.0 = greedy / deterministic decoding
 
 paths:
-  audio_folder:   "data"
+  audio_folder:   "data/audio"
   reference_file: "data/references.txt"
   results_file:   "results/predictions.txt"
   log_file:       "results/pipeline.log"
