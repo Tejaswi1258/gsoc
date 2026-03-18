@@ -1,0 +1,35 @@
+pipeline:
+  model_size: "base"        # Whisper model: tiny | base | small | medium | large
+  language: "es"            # ISO 639-1 language code
+  denoise: true             # Apply spectral noise reduction
+  beam_size: 5              # Whisper beam search width
+  best_of: 5                # Whisper sampling candidates
+  temperature: 0.0          # 0.0 = greedy decoding
+
+paths:
+  audio_folder: "data"
+  reference_file: "data/references.txt"
+  results_file: "results/predictions.txt"
+  log_file: "results/pipeline.log"
+
+corrections:
+  words:
+    nino: "niño"
+    nina: "niña"
+    rapido: "rápido"
+    rapida: "rápida"
+    senor: "señor"
+    senora: "señora"
+    arbol: "árbol"
+    musica: "música"
+    telefono: "teléfono"
+    numero: "número"
+    pagina: "página"
+    cafe: "café"
+    ingles: "inglés"
+    frances: "francés"
+  phrases:
+    "man zana": "manzana"
+    "a vion": "avión"
+    "auto bus": "autobús"
+    "para guas": "paraguas"

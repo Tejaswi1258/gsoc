@@ -1,180 +1,218 @@
-import whisper
-import librosa
-from jiwer import wer
+"""
+main.py — Spanish Learner Speech Transcription Pipeline
+========================================================
+Entry point for the GSoC speech-to-text evaluation system.
+
+Usage:
+    python main.py
+    python main.py --input data/audio --refs data/references.txt
+    python main.py --model small --no-denoise
+    python main.py --config config.yaml
+"""
+
+import argparse
+import logging
 import os
 import shutil
+import sys
 
-# -----------------------------
-# AUDIO PREPROCESSING
-# -----------------------------
-def preprocess_audio(file_path):
-    """
-    Load audio and remove silence
-    """
-    audio, sr = librosa.load(file_path, sr=16000)
+import yaml
 
-    # Trim silence from beginning and end
-    audio_trimmed, _ = librosa.effects.trim(audio)
-
-    return audio_trimmed, sr
-
-
-# -----------------------------
-# TRANSCRIPTION
-# -----------------------------
-def transcribe_audio(file_path):
-    """
-    Convert speech to text
-    """
-
-    # kept for backwards-compatibility; prefer passing a loaded model
-    model = whisper.load_model("base")
-
-    result = model.transcribe(file_path, language="es")
-
-    return result["text"]
+from modules import (
+    load_model,
+    transcribe,
+    preprocess_audio,
+    postprocess_text,
+    evaluate_dataset,
+    average_wer,
+    save_results,
+    analyze_errors,
+    print_error_report,
+)
+from modules.transcription import AUDIO_EXTENSIONS
 
 
-# -----------------------------
-# POST PROCESSING
-# -----------------------------
-def postprocess_text(text):
-    """
-    Correct common learner transcription errors
-    """
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
 
-    corrections = {
-        "nino": "niño",
-        "man zana": "manzana",
-        "rapido": "rápido",
-        "senor": "señor"
-    }
-
-    words = text.split()
-
-    corrected_text = " ".join(corrections.get(word, word) for word in words)
-
-    return corrected_text
+def setup_logging(log_file: str) -> None:
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(log_file, encoding="utf-8"),
+        ],
+    )
 
 
-# -----------------------------
-# EVALUATION
-# -----------------------------
-def evaluate(reference, prediction):
-    """
-    Calculate Word Error Rate
-    """
-
-    score = wer(reference, prediction)
-
-    return score
+logger = logging.getLogger(__name__)
 
 
-# -----------------------------
-# MAIN PIPELINE
-# -----------------------------
-def main():
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
 
-    # point to the audio directory
-    audio_folder = "data"
-    reference_file = "data/references.txt"
+def load_config(config_path: str) -> dict:
+    if not os.path.exists(config_path):
+        logger.warning("Config file not found: %s — using defaults", config_path)
+        return {}
+    with open(config_path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
-    # Load references
+
+def load_references(reference_file: str) -> dict[str, str]:
+    """Parse pipe-delimited reference file into {filename: text} dict."""
     references = {}
-
     try:
-        with open(reference_file) as f:
+        with open(reference_file, encoding="utf-8") as f:
             for line in f:
-                if not line.strip():
+                line = line.strip()
+                if not line:
                     continue
-                parts = line.strip().split("|", 1)
-                if len(parts) != 2:
-                    continue
-                audio, text = parts
-                references[audio] = text
+                parts = line.split("|", 1)
+                if len(parts) == 2:
+                    references[parts[0].strip()] = parts[1].strip()
     except FileNotFoundError:
-        print(f"Reference file not found: {reference_file}")
-        return
+        logger.error("Reference file not found: %s", reference_file)
+    return references
 
-    total_wer = 0
-    count = 0
 
-    predictions = []
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
-    print("Starting transcription pipeline...\n")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Spanish Learner Speech Transcription & Evaluation Pipeline"
+    )
+    parser.add_argument("--input",    default=None, help="Path to audio folder")
+    parser.add_argument("--refs",     default=None, help="Path to references.txt")
+    parser.add_argument("--output",   default=None, help="Path to results output file")
+    parser.add_argument("--model",    default=None, help="Whisper model size (tiny/base/small/medium)")
+    parser.add_argument("--config",   default="config.yaml", help="Path to config YAML")
+    parser.add_argument("--no-denoise", action="store_true", help="Disable noise reduction")
+    return parser.parse_args()
 
-    # verify ffmpeg is available (used by whisper for audio decoding)
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    args = parse_args()
+    cfg  = load_config(args.config)
+
+    pipeline_cfg    = cfg.get("pipeline", {})
+    paths_cfg       = cfg.get("paths", {})
+    corrections_cfg = cfg.get("corrections", {})
+
+    log_file = paths_cfg.get("log_file", "results/pipeline.log")
+    setup_logging(log_file)
+
+    # Resolve settings: CLI args override config, config overrides defaults
+    audio_folder   = args.input  or paths_cfg.get("audio_folder",   "data")
+    reference_file = args.refs   or paths_cfg.get("reference_file", "data/references.txt")
+    results_file   = args.output or paths_cfg.get("results_file",   "results/predictions.txt")
+    model_size     = args.model  or pipeline_cfg.get("model_size",  "base")
+    language       = pipeline_cfg.get("language",    "es")
+    denoise        = not args.no_denoise and pipeline_cfg.get("denoise", True)
+    beam_size      = pipeline_cfg.get("beam_size",   5)
+    best_of        = pipeline_cfg.get("best_of",     5)
+    temperature    = pipeline_cfg.get("temperature", 0.0)
+
+    word_corrections   = corrections_cfg.get("words")
+    phrase_corrections = corrections_cfg.get("phrases")
+
+    logger.info("=" * 55)
+    logger.info("  Spanish Learner Speech Transcription Pipeline")
+    logger.info("=" * 55)
+    logger.info("Model: %s | Language: %s | Denoise: %s", model_size, language, denoise)
+
+    # Preflight checks
     if shutil.which("ffmpeg") is None:
-        print("ffmpeg not found on PATH. Install ffmpeg and ensure it's available in PATH.")
-        print("On Windows, you can install via Chocolatey: 'choco install ffmpeg' or download from ffmpeg.org.")
-        return
+        logger.error("ffmpeg not found. Install via: choco install ffmpeg  OR  https://ffmpeg.org")
+        sys.exit(1)
 
-    # load model once to avoid reloading for each file
-    try:
-        model = whisper.load_model("base")
-    except Exception as e:
-        print("Failed to load Whisper model:", e)
-        return
+    references = load_references(reference_file)
+    if not references:
+        logger.warning("No references loaded — WER will be 1.0 for all files")
 
-    for audio_file in os.listdir(audio_folder):
-        # skip non-audio files and directories
-        if not audio_file.lower().endswith(('.wav', '.mp3', '.flac', '.m4a')):
-            continue
+    # Load Whisper model once
+    model = load_model(model_size)
 
-        audio_path = os.path.join(audio_folder, audio_file)
+    # Collect valid audio files
+    audio_files = [
+        f for f in sorted(os.listdir(audio_folder))
+        if f.lower().endswith(AUDIO_EXTENSIONS)
+        and os.path.isfile(os.path.join(audio_folder, f))
+        and os.path.getsize(os.path.join(audio_folder, f)) > 0
+    ]
 
-        if not os.path.isfile(audio_path):
-            continue
+    if not audio_files:
+        logger.error("No valid audio files found in: %s", audio_folder)
+        sys.exit(1)
 
-        print("Processing:", audio_file)
+    logger.info("Processing %d audio file(s)...\n", len(audio_files))
 
-        # skip empty or zero-length files
+    predictions = {}
+
+    for filename in audio_files:
+        path = os.path.join(audio_folder, filename)
+        logger.info("── %s", filename)
+
         try:
-            if os.path.getsize(audio_path) == 0:
-                print(f"Skipping empty audio file: {audio_file}")
-                continue
-        except OSError:
-            print(f"Could not access file size for: {audio_file}")
-            continue
-
-        # transcription
-        try:
-            prediction = model.transcribe(audio_path, language="es")["text"]
+            audio, sr = preprocess_audio(path, denoise=denoise)
         except Exception as e:
-            print(f"Transcription failed for {audio_file}: {e}")
+            logger.error("Preprocessing failed for %s: %s", filename, e)
             continue
 
-        # postprocess
-        prediction = postprocess_text(prediction)
+        try:
+            raw_text = transcribe(
+                audio, model,
+                language=language,
+                beam_size=beam_size,
+                best_of=best_of,
+                temperature=temperature,
+            )
+        except Exception as e:
+            logger.error("Transcription failed for %s: %s", filename, e)
+            continue
 
-        reference = references.get(audio_file, "")
+        prediction = postprocess_text(
+            raw_text,
+            word_corrections=word_corrections,
+            phrase_corrections=phrase_corrections,
+        )
+        predictions[filename] = prediction
 
-        error = evaluate(reference, prediction)
+        reference = references.get(filename, "")
+        logger.info("  Prediction : %s", prediction)
+        logger.info("  Reference  : %s", reference)
 
-        total_wer += error
-        count += 1
+    if not predictions:
+        logger.error("No files were successfully transcribed.")
+        sys.exit(1)
 
-        predictions.append(f"{audio_file}|{prediction}|WER:{error}")
+    # Evaluation
+    results  = evaluate_dataset(predictions, references)
+    avg      = average_wer(results)
 
-        print("Prediction:", prediction)
-        print("Reference:", reference)
-        print("WER:", error)
-        print()
+    logger.info("\n%s", "=" * 55)
+    logger.info("  RESULTS SUMMARY")
+    logger.info("=" * 55)
+    for filename, data in results.items():
+        logger.info("  %-30s  WER: %.4f", filename, data["wer"])
+    logger.info("  %-30s  WER: %.4f", "AVERAGE", avg)
+    logger.info("=" * 55)
 
-    if count == 0:
-        print("No audio files processed.")
-        return
+    save_results(results, results_file)
 
-    avg_wer = total_wer / count
-
-    print("Average WER:", avg_wer)
-
-    # save results
-    os.makedirs("results", exist_ok=True)
-
-    with open("results/predictions.txt", "w") as f:
-        for line in predictions:
-            f.write(line + "\n")
+    # Error analysis
+    error_summary = analyze_errors(results)
+    print_error_report(error_summary)
 
 
 if __name__ == "__main__":
